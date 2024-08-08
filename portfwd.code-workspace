@@ -1,0 +1,25 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "extensions": {
+    "recommendations": [
+      "haskell.haskell"
+    ]
+  },
+  "settings": {
+    "editor.renderWhitespace": "boundary",
+    "editor.formatOnSave": true,
+    "haskell.manageHLS": "GHCup",
+    "haskell.upgradeGHCup": false,
+    "haskell.toolchain": {
+      "cabal": "recommended",
+      "hls": "recommended",
+      "ghc": "recommended"
+    },
+    "haskell.formattingProvider": "ormolu",
+    "editor.tabSize": 2
+  }
+}
