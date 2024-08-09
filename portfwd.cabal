@@ -22,6 +22,7 @@ executable portfwd
     build-depends:
         base,
         brick,
+        containers,
         process,
         vty
     hs-source-dirs:   app
