@@ -7,7 +7,7 @@ import qualified Brick.Widgets.Border as Border
 import qualified Brick.Widgets.Core as Core
 import qualified Control.Monad as M (void)
 import qualified Data.Map.Strict as Map
-import qualified Graphics.Vty
+import qualified Graphics.Vty as Vty
 
 data ConnectionState = ConnectionState
   { sHosts :: [String],
@@ -35,7 +35,7 @@ app =
   Brick.App
     { Brick.appDraw = drawUI,
       Brick.appChooseCursor = Brick.neverShowCursor,
-      Brick.appHandleEvent = undefined,
+      Brick.appHandleEvent = handleEvent,
       Brick.appStartEvent = pure (),
       Brick.appAttrMap = const attributes
     }
@@ -52,4 +52,15 @@ drawPort :: Int -> Types.Widget Name
 drawPort = Core.padLeft (Core.Pad 2) . Core.str . show
 
 attributes :: Attr.AttrMap
-attributes = Attr.attrMap Graphics.Vty.defAttr []
+attributes = Attr.attrMap Vty.defAttr []
+
+handleEvent :: Types.BrickEvent Name e -> Types.EventM Name ConnectionState ()
+handleEvent (Types.VtyEvent ev) = case ev of
+  Vty.EvKey Vty.KEsc [] -> Brick.halt
+  Vty.EvKey (Vty.KChar 'q') [] -> Brick.halt
+  Vty.EvKey Vty.KLeft [] -> do
+    s <- Types.get
+    let s' = s {sPorts = 1111 : sPorts s}
+    Types.put s'
+  _ -> pure ()
+handleEvent _ = pure ()
