@@ -3,6 +3,7 @@ module Main where
 import qualified Brick.AttrMap as Attr
 import qualified Brick.Main as Brick
 import qualified Brick.Types as Types
+import qualified Brick.Util as Util
 import qualified Brick.Widgets.Border as Border
 import qualified Brick.Widgets.Core as Core
 import qualified Control.Monad as M (void)
@@ -46,13 +47,19 @@ drawUI s = [Core.hBox . map hosts . sHosts $ s]
     hosts h = drawHost h (sPorts s)
 
 drawHost :: String -> [Int] -> Types.Widget Name
-drawHost host ports = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ Core.str host : Border.hBorder : map drawPort ports
+drawHost host ports = if host == "bar" then Core.withAttr (Attr.attrName "selectedHost") box else box
+  where
+    box = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ Core.str host : Border.hBorder : map drawPort ports
 
 drawPort :: Int -> Types.Widget Name
 drawPort = Core.padLeft (Core.Pad 2) . Core.str . show
 
 attributes :: Attr.AttrMap
-attributes = Attr.attrMap Vty.defAttr []
+attributes =
+  Attr.attrMap
+    Vty.defAttr
+    [ (Attr.attrName "selectedHost", Util.fg Vty.yellow)
+    ]
 
 handleEvent :: Types.BrickEvent Name e -> Types.EventM Name ConnectionState ()
 handleEvent (Types.VtyEvent ev) = case ev of
