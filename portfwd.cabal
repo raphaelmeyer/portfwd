@@ -17,12 +17,14 @@ common warnings
 executable portfwd
     import:           warnings
     main-is:          Main.hs
-    -- other-modules:
+    other-modules:
+        Settings
     -- other-extensions:
     build-depends:
         base,
         brick,
         containers,
+        json,
         process,
         vty
     hs-source-dirs:   app

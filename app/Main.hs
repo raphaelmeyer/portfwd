@@ -9,6 +9,8 @@ import qualified Brick.Widgets.Core as Core
 import qualified Control.Monad as M (void)
 import qualified Data.Map.Strict as Map
 import qualified Graphics.Vty as Vty
+import qualified Settings
+import qualified Text.JSON
 
 type Host = String
 
@@ -35,11 +37,21 @@ main = do
 
 initialState :: ConnectionState
 initialState =
-  ConnectionState
-    { sHosts = SelectHost {selectLeft = [], selectRight = ["foo", "bar", "baz", "remotehost"]},
-      sPorts = [1234, 4456, 4000, 4001, 4002],
-      sConnections = Map.empty
-    }
+  case result of
+    Text.JSON.Ok settings ->
+      ConnectionState
+        { sHosts = SelectHost {selectLeft = [], selectRight = Settings.hosts settings},
+          sPorts = Settings.ports settings,
+          sConnections = Map.empty
+        }
+    Text.JSON.Error _ ->
+      ConnectionState
+        { sHosts = SelectHost {selectLeft = [], selectRight = []},
+          sPorts = [],
+          sConnections = Map.empty
+        }
+  where
+    result = Text.JSON.decode "{\"hosts\": [\"foo\", \"pan\"], \"ports\": [1234,5555,7890]}" :: Text.JSON.Result Settings.Settings
 
 app :: Brick.App ConnectionState e Name
 app =
