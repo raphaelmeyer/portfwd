@@ -17,11 +17,15 @@ type Host = String
 
 type Port = Int
 
+type Connections = Map.Map Port Host
+
 data ConnectionState = ConnectionState
   { sHosts :: Cursor.Cursor Host,
     sPorts :: Cursor.Cursor Port,
-    sConnections :: Map.Map Port Host
+    sConnections :: Connections
   }
+
+data PortStatus = Available | InUse | Connected
 
 type Name = ()
 
@@ -57,19 +61,24 @@ app =
     }
 
 drawUI :: ConnectionState -> [Types.Widget Name]
-drawUI s = [Core.hBox . Cursor.mapWith (drawHost (sPorts s)) . sHosts $ s]
+drawUI s = [Core.hBox . Cursor.mapWith (drawHost s) . sHosts $ s]
 
-drawHost :: Cursor.Cursor Port -> Bool -> Host -> Types.Widget Name
-drawHost ports selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ box
+drawHost :: ConnectionState -> Bool -> Host -> Types.Widget Name
+drawHost s selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ box
   where
-    box = title : Border.hBorder : Cursor.mapWith (drawPort selected) ports
+    box = title : Border.hBorder : Cursor.mapWith drawPort' (sPorts s)
     title = Core.withAttr attr . Core.str $ host
     attr = if selected then aHost <> aSelected else aHost
+    drawPort' current = drawPort s host (current && selected)
 
-drawPort :: Bool -> Bool -> Port -> Types.Widget Name
-drawPort selectedHost selected = Core.padLeft (Core.Pad 2) . Core.withAttr attr . Core.str . show
+drawPort :: ConnectionState -> Host -> Bool -> Port -> Types.Widget Name
+drawPort s host selected port = Core.padLeft (Core.Pad 2) . Core.withAttr attr . Core.str . show $ port
   where
-    attr = if selected && selectedHost then aAvailable <> aSelected else aAvailable
+    attr = if selected then status <> aSelected else status
+    status = case queryPort (sConnections s) host port of
+      Available -> aAvailable
+      Connected -> aConnected
+      InUse -> aInUse
 
 aHost :: Attr.AttrName
 aHost = Attr.attrName "host"
@@ -93,7 +102,11 @@ attributes =
     [ (aHost, Util.fg Vty.white),
       (aHost <> aSelected, Util.fg Vty.blue `Vty.withStyle` Vty.bold),
       (aAvailable, Util.fg Vty.white),
-      (aAvailable <> aSelected, Util.style Vty.bold)
+      (aAvailable <> aSelected, Util.style Vty.bold),
+      (aConnected, Util.fg Vty.green),
+      (aConnected <> aSelected, Util.style Vty.bold),
+      (aInUse, Util.fg Vty.red),
+      (aInUse <> aSelected, Util.style Vty.bold)
     ]
 
 handleEvent :: Types.BrickEvent Name e -> Types.EventM Name ConnectionState ()
@@ -110,3 +123,8 @@ handleEvent (Types.VtyEvent ev) = case ev of
     Types.modify (\s -> s {sPorts = Cursor.next (sPorts s)})
   _ -> pure ()
 handleEvent _ = pure ()
+
+queryPort :: Connections -> Host -> Port -> PortStatus
+queryPort connections host port = case Map.lookup port connections of
+  Nothing -> Available
+  Just usedBy -> if usedBy == host then Connected else InUse
