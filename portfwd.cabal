@@ -24,6 +24,7 @@ executable portfwd
         base,
         brick,
         containers,
+        filepath,
         json,
         process,
         vty

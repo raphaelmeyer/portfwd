@@ -6,11 +6,11 @@ import qualified Brick.Types as Types
 import qualified Brick.Util as Util
 import qualified Brick.Widgets.Border as Border
 import qualified Brick.Widgets.Core as Core
+import qualified Control.Exception as Ex
 import qualified Control.Monad as M (void)
 import qualified Data.Map.Strict as Map
 import qualified Graphics.Vty as Vty
 import qualified Settings
-import qualified Text.JSON
 
 type Host = String
 
@@ -32,26 +32,25 @@ data ConnectionState = ConnectionState
 type Name = ()
 
 main :: IO ()
-main = do
-  M.void $ Brick.defaultMain app initialState
-
-initialState :: ConnectionState
-initialState =
+main = Ex.handle onError $ do
+  result <- Settings.load
   case result of
-    Text.JSON.Ok settings ->
-      ConnectionState
-        { sHosts = SelectHost {selectLeft = [], selectRight = Settings.hosts settings},
-          sPorts = Settings.ports settings,
-          sConnections = Map.empty
-        }
-    Text.JSON.Error _ ->
-      ConnectionState
-        { sHosts = SelectHost {selectLeft = [], selectRight = []},
-          sPorts = [],
-          sConnections = Map.empty
-        }
-  where
-    result = Text.JSON.decode "{\"hosts\": [\"foo\", \"pan\"], \"ports\": [1234,5555,7890]}" :: Text.JSON.Result Settings.Settings
+    Right settings -> M.void $ Brick.defaultMain app (initialState settings)
+    Left err -> showError err
+
+onError :: Ex.IOException -> IO ()
+onError = showError
+
+showError :: (Show s) => s -> IO ()
+showError err = putStrLn $ "❗ " ++ show err
+
+initialState :: Settings.Settings -> ConnectionState
+initialState settings =
+  ConnectionState
+    { sHosts = SelectHost {selectLeft = [], selectRight = Settings.hosts settings},
+      sPorts = Settings.ports settings,
+      sConnections = Map.empty
+    }
 
 app :: Brick.App ConnectionState e Name
 app =
