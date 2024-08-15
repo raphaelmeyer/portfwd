@@ -121,10 +121,28 @@ handleEvent (Types.VtyEvent ev) = case ev of
     Types.modify (\s -> s {sPorts = Cursor.previous (sPorts s)})
   Vty.EvKey Vty.KDown [] -> do
     Types.modify (\s -> s {sPorts = Cursor.next (sPorts s)})
+  Vty.EvKey Vty.KEnter [] -> do
+    Types.modify togglePort
   _ -> pure ()
 handleEvent _ = pure ()
+
+togglePort :: ConnectionState -> ConnectionState
+togglePort s = case (Cursor.selected . sPorts $ s, Cursor.selected . sHosts $ s) of
+  (Just port, Just host) -> toggle port host
+  _ -> s
+  where
+    toggle port host = case queryPort (sConnections s) host port of
+      Available -> s {sConnections = connectPort port host (sConnections s)}
+      Connected -> s {sConnections = disconnectPort port (sConnections s)}
+      _ -> s
 
 queryPort :: Connections -> Host -> Port -> PortStatus
 queryPort connections host port = case Map.lookup port connections of
   Nothing -> Available
   Just usedBy -> if usedBy == host then Connected else InUse
+
+connectPort :: Port -> Host -> Connections -> Connections
+connectPort = Map.insert
+
+disconnectPort :: Port -> Connections -> Connections
+disconnectPort = Map.delete

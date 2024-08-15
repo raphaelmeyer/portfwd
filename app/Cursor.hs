@@ -1,4 +1,4 @@
-module Cursor (Cursor, makeCursor, next, previous, mapWith) where
+module Cursor (Cursor, makeCursor, next, previous, mapWith, selected) where
 
 data Cursor a = Cursor {left :: [a], right :: [a]}
 
@@ -15,6 +15,10 @@ previous :: Cursor a -> Cursor a
 previous c = case (left c, right c) of
   ([], _) -> c
   (current : l, r) -> Cursor {left = l, right = current : r}
+
+selected :: Cursor a -> Maybe a
+selected Cursor {right = r : _} = Just r
+selected _ = Nothing
 
 mapWith :: (Bool -> a -> b) -> Cursor a -> [b]
 mapWith f Cursor {left = l, right = []} =
