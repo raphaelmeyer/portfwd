@@ -8,6 +8,7 @@ import qualified Brick.Widgets.Border as Border
 import qualified Brick.Widgets.Core as Core
 import qualified Control.Exception as Ex
 import qualified Control.Monad as M (void)
+import qualified Cursor
 import qualified Data.Map.Strict as Map
 import qualified Graphics.Vty as Vty
 import qualified Settings
@@ -16,18 +17,11 @@ type Host = String
 
 type Port = Int
 
-data SelectHost = SelectHost
-  { selectLeft :: [Host],
-    selectRight :: [Host]
-  }
-  deriving (Eq, Show)
-
 data ConnectionState = ConnectionState
-  { sHosts :: SelectHost,
+  { sHosts :: Cursor.Cursor Host,
     sPorts :: [Port],
     sConnections :: Map.Map Port Host
   }
-  deriving (Eq, Show)
 
 type Name = ()
 
@@ -47,7 +41,7 @@ showError err = putStrLn $ "❗ " ++ show err
 initialState :: Settings.Settings -> ConnectionState
 initialState settings =
   ConnectionState
-    { sHosts = SelectHost {selectLeft = [], selectRight = Settings.hosts settings},
+    { sHosts = Cursor.makeCursor (Settings.hosts settings),
       sPorts = Settings.ports settings,
       sConnections = Map.empty
     }
@@ -62,27 +56,8 @@ app =
       Brick.appAttrMap = const attributes
     }
 
-mapHosts :: (Bool -> Host -> a) -> SelectHost -> [a]
-mapHosts f SelectHost {selectLeft = left, selectRight = []} =
-  map (f False) . reverse $ left
-mapHosts f SelectHost {selectLeft = left, selectRight = (current : right)} =
-  (map (f False) . reverse $ left) ++ [f True current] ++ map (f False) right
-
-nextHost :: SelectHost -> SelectHost
-nextHost s@SelectHost {selectLeft = left, selectRight = right} =
-  case (left, right) of
-    (_, []) -> s
-    (_, [_]) -> s
-    (l, current : r) -> SelectHost {selectLeft = current : l, selectRight = r}
-
-previousHost :: SelectHost -> SelectHost
-previousHost s@SelectHost {selectLeft = left, selectRight = right} =
-  case (left, right) of
-    ([], _) -> s
-    (current : l, r) -> SelectHost {selectLeft = l, selectRight = current : r}
-
 drawUI :: ConnectionState -> [Types.Widget Name]
-drawUI s = [Core.hBox . mapHosts (drawHost (sPorts s)) . sHosts $ s]
+drawUI s = [Core.hBox . Cursor.mapWith (drawHost (sPorts s)) . sHosts $ s]
 
 drawHost :: [Port] -> Bool -> Host -> Types.Widget Name
 drawHost ports selected host = if selected then Core.withAttr (Attr.attrName "selectedHost") box else box
@@ -105,11 +80,11 @@ handleEvent (Types.VtyEvent ev) = case ev of
   Vty.EvKey (Vty.KChar 'q') [] -> Brick.halt
   Vty.EvKey Vty.KRight [] -> do
     s <- Types.get
-    let s' = s {sHosts = nextHost (sHosts s)}
+    let s' = s {sHosts = Cursor.next (sHosts s)}
     Types.put s'
   Vty.EvKey Vty.KLeft [] -> do
     s <- Types.get
-    let s' = s {sHosts = previousHost (sHosts s)}
+    let s' = s {sHosts = Cursor.previous (sHosts s)}
     Types.put s'
   _ -> pure ()
 handleEvent _ = pure ()

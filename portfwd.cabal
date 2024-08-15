@@ -18,6 +18,7 @@ executable portfwd
     import:           warnings
     main-is:          Main.hs
     other-modules:
+        Cursor,
         Settings
     -- other-extensions:
     build-depends:
