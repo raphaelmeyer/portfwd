@@ -63,23 +63,37 @@ drawHost :: Cursor.Cursor Port -> Bool -> Host -> Types.Widget Name
 drawHost ports selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ box
   where
     box = title : Border.hBorder : Cursor.mapWith (drawPort selected) ports
-    title =
-      if selected
-        then Core.withAttr (Attr.attrName "selectedHost") $ Core.str host
-        else Core.str host
+    title = Core.withAttr attr . Core.str $ host
+    attr = if selected then aHost <> aSelected else aHost
 
 drawPort :: Bool -> Bool -> Port -> Types.Widget Name
-drawPort selectedHost selected =
-  if selected && selectedHost
-    then Core.padLeft (Core.Pad 2) . Core.withAttr (Attr.attrName "selectedPort") . Core.str . show
-    else Core.padLeft (Core.Pad 2) . Core.str . show
+drawPort selectedHost selected = Core.padLeft (Core.Pad 2) . Core.withAttr attr . Core.str . show
+  where
+    attr = if selected && selectedHost then aAvailable <> aSelected else aAvailable
+
+aHost :: Attr.AttrName
+aHost = Attr.attrName "host"
+
+aAvailable :: Attr.AttrName
+aAvailable = Attr.attrName "available"
+
+aInUse :: Attr.AttrName
+aInUse = Attr.attrName "in-use"
+
+aConnected :: Attr.AttrName
+aConnected = Attr.attrName "connected"
+
+aSelected :: Attr.AttrName
+aSelected = Attr.attrName "selected"
 
 attributes :: Attr.AttrMap
 attributes =
   Attr.attrMap
     Vty.defAttr
-    [ (Attr.attrName "selectedHost", Util.fg Vty.blue `Vty.withStyle` Vty.bold),
-      (Attr.attrName "selectedPort", Util.fg Vty.green)
+    [ (aHost, Util.fg Vty.white),
+      (aHost <> aSelected, Util.fg Vty.blue `Vty.withStyle` Vty.bold),
+      (aAvailable, Util.fg Vty.white),
+      (aAvailable <> aSelected, Util.style Vty.bold)
     ]
 
 handleEvent :: Types.BrickEvent Name e -> Types.EventM Name ConnectionState ()
