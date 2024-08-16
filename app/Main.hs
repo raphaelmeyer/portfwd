@@ -8,6 +8,7 @@ import qualified Brick.Widgets.Border as Border
 import qualified Brick.Widgets.Core as Core
 import qualified Control.Exception as Ex
 import qualified Control.Monad as M (void)
+import Control.Monad.IO.Class (liftIO)
 import qualified Cursor
 import qualified Data.Map.Strict as Map
 import qualified Graphics.Vty as Vty
@@ -122,27 +123,39 @@ handleEvent (Types.VtyEvent ev) = case ev of
   Vty.EvKey Vty.KDown [] -> do
     Types.modify (\s -> s {sPorts = Cursor.next (sPorts s)})
   Vty.EvKey Vty.KEnter [] -> do
-    Types.modify togglePort
+    s <- Types.get
+    s' <- liftIO . togglePort $ s
+    Types.put s'
   _ -> pure ()
 handleEvent _ = pure ()
 
-togglePort :: ConnectionState -> ConnectionState
-togglePort s = case (Cursor.selected . sPorts $ s, Cursor.selected . sHosts $ s) of
-  (Just port, Just host) -> toggle port host
-  _ -> s
+togglePort :: ConnectionState -> IO ConnectionState
+togglePort s = do
+  case getSelected s of
+    Just (host, port, status) -> action s
+      where
+        action = case status of
+          Available -> connectPort port host
+          Connected -> disconnectPort port
+          _ -> pure
+    Nothing -> pure s
+
+getSelected :: ConnectionState -> Maybe (Host, Port, PortStatus)
+getSelected s = case (Cursor.selected . sHosts $ s, Cursor.selected . sPorts $ s) of
+  (Just host, Just port) -> Just (host, port, status host port)
+  _ -> Nothing
   where
-    toggle port host = case queryPort (sConnections s) host port of
-      Available -> s {sConnections = connectPort port host (sConnections s)}
-      Connected -> s {sConnections = disconnectPort port (sConnections s)}
-      _ -> s
+    status = queryPort (sConnections s)
 
 queryPort :: Connections -> Host -> Port -> PortStatus
 queryPort connections host port = case Map.lookup port connections of
   Nothing -> Available
   Just usedBy -> if usedBy == host then Connected else InUse
 
-connectPort :: Port -> Host -> Connections -> Connections
-connectPort = Map.insert
+connectPort :: Port -> Host -> ConnectionState -> IO ConnectionState
+connectPort port host s = do
+  pure s {sConnections = Map.insert port host (sConnections s)}
 
-disconnectPort :: Port -> Connections -> Connections
-disconnectPort = Map.delete
+disconnectPort :: Port -> ConnectionState -> IO ConnectionState
+disconnectPort port s = do
+  pure s {sConnections = Map.delete port (sConnections s)}
