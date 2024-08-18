@@ -1,11 +1,13 @@
 module Main where
 
 import qualified Brick.AttrMap as Attr
+import qualified Brick.BChan as BChan
 import qualified Brick.Main as Brick
 import qualified Brick.Types as Types
 import qualified Brick.Util as Util
 import qualified Brick.Widgets.Border as Border
 import qualified Brick.Widgets.Core as Core
+import qualified Control.Concurrent as Concurrent
 import qualified Control.Exception as Ex
 import qualified Control.Monad as M (void)
 import Control.Monad.IO.Class (liftIO)
@@ -13,17 +15,21 @@ import qualified Cursor
 import qualified Data.Map.Strict as Map
 import qualified Graphics.Vty as Vty
 import qualified Settings
+import qualified System.Process as Proc
 
 type Host = String
 
 type Port = Int
 
-type Connections = Map.Map Port Host
+type Connections = Map.Map Port (Host, Proc.ProcessHandle)
+
+data ConnectionEvent = PortConnected (Port, Host, Proc.ProcessHandle) | PortDisconnected Port
 
 data ConnectionState = ConnectionState
   { sHosts :: Cursor.Cursor Host,
     sPorts :: Cursor.Cursor Port,
-    sConnections :: Connections
+    sConnections :: Connections,
+    sChan :: BChan.BChan ConnectionEvent
   }
 
 data PortStatus = Available | InUse | Connected
@@ -34,8 +40,10 @@ main :: IO ()
 main = Ex.handle onError $ do
   result <- Settings.load
   case result of
-    Right settings -> M.void $ Brick.defaultMain app (initialState settings)
     Left err -> showError err
+    Right settings -> do
+      chan <- BChan.newBChan 8
+      M.void $ Brick.customMainWithDefaultVty (Just chan) app (initialState settings chan)
 
 onError :: Ex.IOException -> IO ()
 onError = showError
@@ -43,15 +51,16 @@ onError = showError
 showError :: (Show s) => s -> IO ()
 showError err = putStrLn $ "❗ " ++ show err
 
-initialState :: Settings.Settings -> ConnectionState
-initialState settings =
+initialState :: Settings.Settings -> BChan.BChan ConnectionEvent -> ConnectionState
+initialState settings chan =
   ConnectionState
     { sHosts = Cursor.makeCursor (Settings.hosts settings),
       sPorts = Cursor.makeCursor (Settings.ports settings),
-      sConnections = Map.empty
+      sConnections = Map.empty,
+      sChan = chan
     }
 
-app :: Brick.App ConnectionState e Name
+app :: Brick.App ConnectionState ConnectionEvent Name
 app =
   Brick.App
     { Brick.appDraw = drawUI,
@@ -110,7 +119,7 @@ attributes =
       (aInUse <> aSelected, Util.style Vty.bold)
     ]
 
-handleEvent :: Types.BrickEvent Name e -> Types.EventM Name ConnectionState ()
+handleEvent :: Types.BrickEvent Name ConnectionEvent -> Types.EventM Name ConnectionState ()
 handleEvent (Types.VtyEvent ev) = case ev of
   Vty.EvKey Vty.KEsc [] -> Brick.halt
   Vty.EvKey (Vty.KChar 'q') [] -> Brick.halt
@@ -127,6 +136,10 @@ handleEvent (Types.VtyEvent ev) = case ev of
     s' <- liftIO . togglePort $ s
     Types.put s'
   _ -> pure ()
+handleEvent (Types.AppEvent (PortConnected (port, host, handle))) =
+  Types.modify (\s -> s {sConnections = Map.insert port (host, handle) (sConnections s)})
+handleEvent (Types.AppEvent (PortDisconnected port)) =
+  Types.modify (\s -> s {sConnections = Map.delete port (sConnections s)})
 handleEvent _ = pure ()
 
 togglePort :: ConnectionState -> IO ConnectionState
@@ -150,12 +163,27 @@ getSelected s = case (Cursor.selected . sHosts $ s, Cursor.selected . sPorts $ s
 queryPort :: Connections -> Host -> Port -> PortStatus
 queryPort connections host port = case Map.lookup port connections of
   Nothing -> Available
-  Just usedBy -> if usedBy == host then Connected else InUse
+  Just (usedBy, _) -> if usedBy == host then Connected else InUse
 
 connectPort :: Port -> Host -> ConnectionState -> IO ConnectionState
-connectPort port host s = do
-  pure s {sConnections = Map.insert port host (sConnections s)}
+connectPort port host s = Ex.handle onConnectError $ do
+  let bind = show port ++ ":localhost:" ++ show port
+
+  M.void $ Concurrent.forkIO $ do
+    (_, _, _, h) <- Proc.createProcess (Proc.proc "ssh" ["-N", "-L", bind, host])
+    BChan.writeBChan (sChan s) (PortConnected (port, host, h))
+    -- drain std out/err
+    M.void $ Proc.waitForProcess h
+    BChan.writeBChan (sChan s) (PortDisconnected port)
+  pure s
+  where
+    onConnectError :: Ex.IOException -> IO ConnectionState
+    onConnectError _ = pure s
 
 disconnectPort :: Port -> ConnectionState -> IO ConnectionState
 disconnectPort port s = do
-  pure s {sConnections = Map.delete port (sConnections s)}
+  case Map.lookup port (sConnections s) of
+    Just (_, handle) -> do
+      Proc.terminateProcess handle
+      pure s
+    Nothing -> pure s
