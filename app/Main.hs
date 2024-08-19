@@ -43,7 +43,8 @@ main = Ex.handle onError $ do
     Left err -> showError err
     Right settings -> do
       chan <- BChan.newBChan 8
-      M.void $ Brick.customMainWithDefaultVty (Just chan) app (initialState settings chan)
+      (_, vty) <- Brick.customMainWithDefaultVty (Just chan) app (initialState settings chan)
+      Vty.shutdown vty
 
 onError :: Ex.IOException -> IO ()
 onError = showError
@@ -121,8 +122,8 @@ attributes =
 
 handleEvent :: Types.BrickEvent Name ConnectionEvent -> Types.EventM Name ConnectionState ()
 handleEvent (Types.VtyEvent ev) = case ev of
-  Vty.EvKey Vty.KEsc [] -> Brick.halt
-  Vty.EvKey (Vty.KChar 'q') [] -> Brick.halt
+  Vty.EvKey Vty.KEsc [] -> shutdownApp
+  Vty.EvKey (Vty.KChar 'q') [] -> shutdownApp
   Vty.EvKey Vty.KLeft [] -> do
     Types.modify (\s -> s {sHosts = Cursor.previous (sHosts s)})
   Vty.EvKey Vty.KRight [] -> do
@@ -141,6 +142,12 @@ handleEvent (Types.AppEvent (PortConnected (port, host, handle))) =
 handleEvent (Types.AppEvent (PortDisconnected port)) =
   Types.modify (\s -> s {sConnections = Map.delete port (sConnections s)})
 handleEvent _ = pure ()
+
+shutdownApp :: Types.EventM Name ConnectionState ()
+shutdownApp = do
+  s <- Types.get
+  mapM_ (liftIO . (`disconnectPort` s)) (Map.keys . sConnections $ s)
+  Brick.halt
 
 togglePort :: ConnectionState -> IO ConnectionState
 togglePort s = do
