@@ -12,9 +12,12 @@ import qualified Control.Exception as Ex
 import qualified Control.Monad as M (void)
 import Control.Monad.IO.Class (liftIO)
 import qualified Cursor
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.UTF8 as UTF8
 import qualified Data.Map.Strict as Map
 import qualified Graphics.Vty as Vty
 import qualified Settings
+import qualified System.IO as IO
 import qualified System.Process as Proc
 
 type Host = String
@@ -23,13 +26,20 @@ type Port = Int
 
 type Connections = Map.Map Port (Host, Proc.ProcessHandle)
 
-data ConnectionEvent = PortConnected (Port, Host, Proc.ProcessHandle) | PortDisconnected Port
+data Message = InfoMessage String | ErrorMessage String deriving (Show)
+
+data ConnectionEvent
+  = PortConnected (Port, Host, Proc.ProcessHandle)
+  | PortDisconnected Port
+  | PortMessage (Port, Host, String)
+  | PortError (Port, Host, String)
 
 data ConnectionState = ConnectionState
   { sHosts :: Cursor.Cursor Host,
     sPorts :: Cursor.Cursor Port,
     sConnections :: Connections,
-    sChan :: BChan.BChan ConnectionEvent
+    sChan :: BChan.BChan ConnectionEvent,
+    sMessages :: [Message]
   }
 
 data PortStatus = Available | InUse | Connected
@@ -58,7 +68,8 @@ initialState settings chan =
     { sHosts = Cursor.makeCursor (Settings.hosts settings),
       sPorts = Cursor.makeCursor (Settings.ports settings),
       sConnections = Map.empty,
-      sChan = chan
+      sChan = chan,
+      sMessages = []
     }
 
 app :: Brick.App ConnectionState ConnectionEvent Name
@@ -72,7 +83,10 @@ app =
     }
 
 drawUI :: ConnectionState -> [Types.Widget Name]
-drawUI s = [Core.hBox . Cursor.mapWith (drawHost s) . sHosts $ s]
+drawUI s = [Core.vBox [hosts, Border.hBorder, messages]]
+  where
+    hosts = Core.hBox . Cursor.mapWith (drawHost s) . sHosts $ s
+    messages = Core.padLeftRight 1 . Core.vBox . map drawMessage . sMessages $ s
 
 drawHost :: ConnectionState -> Bool -> Host -> Types.Widget Name
 drawHost s selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ box
@@ -91,6 +105,10 @@ drawPort s host selected port = Core.padLeft (Core.Pad 2) . Core.withAttr attr .
       Connected -> aConnected
       InUse -> aInUse
 
+drawMessage :: Message -> Types.Widget Name
+drawMessage (InfoMessage message) = Core.withAttr aInfo $ Core.str message
+drawMessage (ErrorMessage message) = Core.withAttr aError $ Core.str message
+
 aHost :: Attr.AttrName
 aHost = Attr.attrName "host"
 
@@ -106,18 +124,26 @@ aConnected = Attr.attrName "connected"
 aSelected :: Attr.AttrName
 aSelected = Attr.attrName "selected"
 
+aInfo :: Attr.AttrName
+aInfo = Attr.attrName "info"
+
+aError :: Attr.AttrName
+aError = Attr.attrName "error"
+
 attributes :: Attr.AttrMap
 attributes =
   Attr.attrMap
     Vty.defAttr
     [ (aHost, Util.fg Vty.white),
-      (aHost <> aSelected, Util.fg Vty.blue `Vty.withStyle` Vty.bold),
+      (aHost <> aSelected, Util.fg Vty.brightCyan `Vty.withStyle` Vty.bold),
       (aAvailable, Util.fg Vty.white),
       (aAvailable <> aSelected, Util.style Vty.bold),
       (aConnected, Util.fg Vty.green),
       (aConnected <> aSelected, Util.style Vty.bold),
       (aInUse, Util.fg Vty.red),
-      (aInUse <> aSelected, Util.style Vty.bold)
+      (aInUse <> aSelected, Util.style Vty.bold),
+      (aInfo, Util.fg Vty.white),
+      (aError, Util.fg Vty.brightRed)
     ]
 
 handleEvent :: Types.BrickEvent Name ConnectionEvent -> Types.EventM Name ConnectionState ()
@@ -141,7 +167,17 @@ handleEvent (Types.AppEvent (PortConnected (port, host, handle))) =
   Types.modify (\s -> s {sConnections = Map.insert port (host, handle) (sConnections s)})
 handleEvent (Types.AppEvent (PortDisconnected port)) =
   Types.modify (\s -> s {sConnections = Map.delete port (sConnections s)})
+handleEvent (Types.AppEvent (PortMessage (port, host, message))) =
+  Types.modify . appendMessage . InfoMessage $ formatMessage host port message
+handleEvent (Types.AppEvent (PortError (port, host, message))) =
+  Types.modify . appendMessage . ErrorMessage $ formatMessage host port message
 handleEvent _ = pure ()
+
+appendMessage :: Message -> ConnectionState -> ConnectionState
+appendMessage message s = s {sMessages = take 8 $ message : sMessages s}
+
+formatMessage :: Host -> Port -> String -> String
+formatMessage host port message = host ++ ":" ++ show port ++ " '" ++ message ++ "'"
 
 shutdownApp :: Types.EventM Name ConnectionState ()
 shutdownApp = do
@@ -177,10 +213,24 @@ connectPort port host s = Ex.handle onConnectError $ do
   let bind = show port ++ ":localhost:" ++ show port
 
   M.void $ Concurrent.forkIO $ do
-    (_, _, _, h) <- Proc.createProcess (Proc.proc "ssh" ["-N", "-L", bind, host])
-    BChan.writeBChan (sChan s) (PortConnected (port, host, h))
-    -- drain std out/err
-    M.void $ Proc.waitForProcess h
+    (_, Just hOut, Just hErr, hProc) <-
+      Proc.createProcess
+        (Proc.proc "ssh" ["-N", "-L", bind, host])
+          { Proc.std_out = Proc.CreatePipe,
+            Proc.std_err = Proc.CreatePipe
+          }
+    BChan.writeBChan (sChan s) (PortConnected (port, host, hProc))
+
+    handleOutput
+      SubProcess
+        { pHProc = hProc,
+          pHOut = hOut,
+          pHErr = hErr,
+          pOnOut = \msg -> BChan.writeBChan (sChan s) (PortMessage (port, host, msg)),
+          pOnErr = \err -> BChan.writeBChan (sChan s) (PortError (port, host, err))
+        }
+
+    M.void $ Proc.waitForProcess hProc
     BChan.writeBChan (sChan s) (PortDisconnected port)
   pure s
   where
@@ -194,3 +244,52 @@ disconnectPort port s = do
       Proc.terminateProcess handle
       pure s
     Nothing -> pure s
+
+data SubProcess = SubProcess
+  { pHProc :: Proc.ProcessHandle,
+    pHOut :: IO.Handle,
+    pHErr :: IO.Handle,
+    pOnOut :: String -> IO (),
+    pOnErr :: String -> IO ()
+  }
+
+data Buffer = Buffer {bOut :: String, bErr :: String}
+
+handleOutput :: SubProcess -> IO ()
+handleOutput sub = handleOutput' sub Buffer {bOut = "", bErr = ""}
+
+handleOutput' :: SubProcess -> Buffer -> IO ()
+handleOutput' sub buf = do
+  (bOut', out) <- getOutput (bOut buf) (pHOut sub)
+  mapM_ (pOnOut sub) out
+  (bErr', err) <- getOutput (bErr buf) (pHErr sub)
+  mapM_ (pOnErr sub) err
+  status <- Proc.getProcessExitCode (pHProc sub)
+  case status of
+    Nothing -> handleOutput' sub Buffer {bOut = bOut', bErr = bErr'}
+    Just _ -> getLastOutput sub
+
+getLastOutput :: SubProcess -> IO ()
+getLastOutput sub = do
+  out <- contents (pHOut sub)
+  mapM_ (pOnOut sub) out
+  err <- contents (pHErr sub)
+  mapM_ (pOnErr sub) err
+  where
+    contents h = do
+      bs <- BS.hGetContents h
+      pure . lines . filter (/= '\r') . UTF8.toString $ bs
+
+getOutput :: String -> IO.Handle -> IO (String, [String])
+getOutput buf hOut = do
+  bs <- BS.hGetNonBlocking hOut 256
+  pure $ getLines (buf ++ (filter (/= '\r') . UTF8.toString $ bs))
+
+getLines :: String -> (String, [String])
+getLines "" = ("", [])
+getLines buf =
+  if (== '\n') . last $ buf
+    then ("", ls)
+    else (last ls, init ls)
+  where
+    ls = lines buf
