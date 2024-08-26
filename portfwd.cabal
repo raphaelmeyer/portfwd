@@ -19,7 +19,8 @@ executable portfwd
     main-is:          Main.hs
     other-modules:
         Cursor,
-        Settings
+        Settings,
+        SubProcess
     -- other-extensions:
     build-depends:
         base,
