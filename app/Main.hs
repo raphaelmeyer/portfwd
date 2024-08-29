@@ -161,15 +161,22 @@ handleEvent (Types.VtyEvent ev) = case ev of
     s' <- liftIO . togglePort $ s
     Types.put s'
   _ -> pure ()
-handleEvent (Types.AppEvent (PortConnected (port, host, handle))) =
-  Types.modify (\s -> s {sConnections = Map.insert port (host, handle) (sConnections s)})
-handleEvent (Types.AppEvent (PortDisconnected port)) =
-  Types.modify (\s -> s {sConnections = Map.delete port (sConnections s)})
-handleEvent (Types.AppEvent (PortMessage (port, host, message))) =
-  Types.modify . appendMessage . InfoMessage $ formatMessage host port message
-handleEvent (Types.AppEvent (PortError (port, host, message))) =
-  Types.modify . appendMessage . ErrorMessage $ formatMessage host port message
+handleEvent (Types.AppEvent ev) = case ev of
+  (PortConnected (port, host, handle)) ->
+    Types.modify $ onPortConnect port host handle
+  (PortDisconnected port) ->
+    Types.modify . onPortDisconnect $ port
+  (PortMessage (port, host, message)) ->
+    Types.modify . appendMessage . InfoMessage $ formatMessage host port message
+  (PortError (port, host, message)) ->
+    Types.modify . appendMessage . ErrorMessage $ formatMessage host port message
 handleEvent _ = pure ()
+
+onPortConnect :: Port -> Host -> Proc.ProcessHandle -> ConnectionState -> ConnectionState
+onPortConnect port host handle s = s {sConnections = Map.insert port (host, handle) (sConnections s)}
+
+onPortDisconnect :: Port -> ConnectionState -> ConnectionState
+onPortDisconnect port s = s {sConnections = Map.delete port (sConnections s)}
 
 appendMessage :: Message -> ConnectionState -> ConnectionState
 appendMessage message s = s {sMessages = take 8 $ message : sMessages s}
