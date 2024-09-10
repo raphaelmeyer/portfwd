@@ -95,8 +95,9 @@ drawHost s selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 
     drawPort' current = drawPort s host (current && selected)
 
 drawPort :: ConnectionState -> Host -> Bool -> Port -> Types.Widget Name
-drawPort s host selected port = Core.padLeft (Core.Pad 2) . Core.withAttr attr . Core.str . show $ port
+drawPort s host selected port = Core.padLeft (Core.Pad 2) . Core.withAttr attr . Core.str $ prefix ++ show port
   where
+    prefix = if selected then "> " else "  "
     attr = if selected then status <> aSelected else status
     status = case queryPort (sConnections s) host port of
       Available -> aAvailable
