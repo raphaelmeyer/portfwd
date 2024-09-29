@@ -18,6 +18,7 @@ executable portfwd
     import:           warnings
     main-is:          Main.hs
     other-modules:
+        Application,
         Cursor,
         Settings,
         SubProcess
