@@ -14,6 +14,7 @@ import Control.Monad.IO.Class (liftIO)
 import qualified Cursor
 import qualified Data.Map.Strict as Map
 import qualified Graphics.Vty as Vty
+import qualified Lens.Micro as Lens
 import qualified Settings
 import qualified SubProcess as Sub
 import qualified System.Process as Proc
@@ -29,15 +30,29 @@ data Message = InfoMessage String | ErrorMessage String deriving (Show)
 data ApplicationEvent
   = PortConnected (Port, Host, Proc.ProcessHandle)
   | PortDisconnected Port
-  | PortMessage (Port, Host, String)
-  | PortError (Port, Host, String)
+  | MessageReceived (Port, Host, String)
+  | ErrorReceived (Port, Host, String)
+
+data UIState = MkUIState
+  { uiStateHosts :: Cursor.Cursor Host,
+    uiStatePorts :: Cursor.Cursor Port,
+    uiStateConnections :: Map.Map Port Host,
+    uiStateMessages :: [Message]
+  }
+
+mkUIState :: Settings.Settings -> UIState
+mkUIState settings =
+  MkUIState
+    { uiStateHosts = Cursor.makeCursor (Settings.hosts settings),
+      uiStatePorts = Cursor.makeCursor (Settings.ports settings),
+      uiStateConnections = Map.empty,
+      uiStateMessages = []
+    }
 
 data ApplicationState = ApplicationState
-  { sHosts :: Cursor.Cursor Host,
-    sPorts :: Cursor.Cursor Port,
+  { appStateUI :: UIState,
     sConnections :: Connections,
-    sChan :: BChan.BChan ApplicationEvent,
-    sMessages :: [Message]
+    sChan :: BChan.BChan ApplicationEvent
   }
 
 data PortStatus = Available | InUse | Connected
@@ -59,43 +74,41 @@ showError err = putStrLn $ "❗ " ++ show err
 initialState :: Settings.Settings -> BChan.BChan ApplicationEvent -> ApplicationState
 initialState settings chan =
   ApplicationState
-    { sHosts = Cursor.makeCursor (Settings.hosts settings),
-      sPorts = Cursor.makeCursor (Settings.ports settings),
+    { appStateUI = mkUIState settings,
       sConnections = Map.empty,
-      sChan = chan,
-      sMessages = []
+      sChan = chan
     }
 
 app :: Brick.App ApplicationState ApplicationEvent Name
 app =
   Brick.App
-    { Brick.appDraw = drawUI,
+    { Brick.appDraw = drawUI . appStateUI,
       Brick.appChooseCursor = Brick.neverShowCursor,
       Brick.appHandleEvent = handleEvent,
       Brick.appStartEvent = pure (),
       Brick.appAttrMap = const attributes
     }
 
-drawUI :: ApplicationState -> [Types.Widget Name]
+drawUI :: UIState -> [Types.Widget Name]
 drawUI s = [Core.vBox [hosts, Border.hBorder, messages]]
   where
-    hosts = Core.hBox . Cursor.mapWith (drawHost s) . sHosts $ s
-    messages = Core.padLeftRight 1 . Core.vBox . map drawMessage . sMessages $ s
+    hosts = Core.hBox . Cursor.mapWith (drawHost s) . uiStateHosts $ s
+    messages = Core.padLeftRight 1 . Core.vBox . map drawMessage . uiStateMessages $ s
 
-drawHost :: ApplicationState -> Bool -> Host -> Types.Widget Name
+drawHost :: UIState -> Bool -> Host -> Types.Widget Name
 drawHost s selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ box
   where
-    box = title : Border.hBorder : Cursor.mapWith drawPort' (sPorts s)
+    box = title : Border.hBorder : Cursor.mapWith drawPort' (uiStatePorts s)
     title = Core.withAttr attr . Core.str $ host
     attr = if selected then aHost <> aSelected else aHost
     drawPort' current = drawPort s host (current && selected)
 
-drawPort :: ApplicationState -> Host -> Bool -> Port -> Types.Widget Name
+drawPort :: UIState -> Host -> Bool -> Port -> Types.Widget Name
 drawPort s host selected port = Core.padLeft (Core.Pad 2) . Core.withAttr attr . Core.str $ prefix ++ show port
   where
     prefix = if selected then "> " else "  "
     attr = if selected then status <> aSelected else status
-    status = case queryPort (sConnections s) host port of
+    status = case queryPort (uiStateConnections s) host port of
       Available -> aAvailable
       Connected -> aConnected
       InUse -> aInUse
@@ -141,33 +154,44 @@ attributes =
       (aError, Util.fg Vty.brightRed)
     ]
 
+lensUIState :: Lens.Lens' ApplicationState UIState
+lensUIState = Lens.lens appStateUI (\appState ui -> appState {appStateUI = ui})
+
 handleEvent :: Types.BrickEvent Name ApplicationEvent -> Types.EventM Name ApplicationState ()
-handleEvent (Types.VtyEvent ev) = case ev of
+handleEvent vtyEv@(Types.VtyEvent ev) = case ev of
   Vty.EvKey Vty.KEsc [] -> shutdownApp
   Vty.EvKey (Vty.KChar 'q') [] -> shutdownApp
-  Vty.EvKey Vty.KLeft [] -> do
-    Types.modify (\s -> s {sHosts = Cursor.previous (sHosts s)})
-  Vty.EvKey Vty.KRight [] -> do
-    Types.modify (\s -> s {sHosts = Cursor.next (sHosts s)})
-  Vty.EvKey Vty.KUp [] -> do
-    Types.modify (\s -> s {sPorts = Cursor.previous (sPorts s)})
-  Vty.EvKey Vty.KDown [] -> do
-    Types.modify (\s -> s {sPorts = Cursor.next (sPorts s)})
   Vty.EvKey Vty.KEnter [] -> do
     s <- Types.get
     s' <- liftIO . togglePort $ s
     Types.put s'
-  _ -> pure ()
-handleEvent (Types.AppEvent ev) = case ev of
+  _ -> Types.zoom lensUIState $ uiHandleEvent vtyEv
+handleEvent appEv@(Types.AppEvent ev) = case ev of
   (PortConnected (port, host, handle)) ->
     Types.modify $ onPortConnect port host handle
   (PortDisconnected port) ->
     Types.modify . onPortDisconnect $ port
-  (PortMessage (port, host, message)) ->
-    Types.modify . appendMessage . InfoMessage $ formatMessage host port message
-  (PortError (port, host, message)) ->
-    Types.modify . appendMessage . ErrorMessage $ formatMessage host port message
+  _ -> Types.zoom lensUIState $ uiHandleEvent appEv
 handleEvent _ = pure ()
+
+uiHandleEvent :: Types.BrickEvent Name ApplicationEvent -> Types.EventM Name UIState ()
+uiHandleEvent (Types.VtyEvent ev) = case ev of
+  Vty.EvKey Vty.KLeft [] -> do
+    Types.modify (\s -> s {uiStateHosts = Cursor.previous (uiStateHosts s)})
+  Vty.EvKey Vty.KRight [] -> do
+    Types.modify (\s -> s {uiStateHosts = Cursor.next (uiStateHosts s)})
+  Vty.EvKey Vty.KUp [] -> do
+    Types.modify (\s -> s {uiStatePorts = Cursor.previous (uiStatePorts s)})
+  Vty.EvKey Vty.KDown [] -> do
+    Types.modify (\s -> s {uiStatePorts = Cursor.next (uiStatePorts s)})
+  _ -> pure ()
+uiHandleEvent (Types.AppEvent ev) = case ev of
+  (MessageReceived (port, host, message)) ->
+    Types.modify . appendMessage . InfoMessage $ formatMessage host port message
+  (ErrorReceived (port, host, message)) ->
+    Types.modify . appendMessage . ErrorMessage $ formatMessage host port message
+  _ -> pure ()
+uiHandleEvent _ = pure ()
 
 onPortConnect :: Port -> Host -> Proc.ProcessHandle -> ApplicationState -> ApplicationState
 onPortConnect port host handle s = s {sConnections = Map.insert port (host, handle) (sConnections s)}
@@ -175,8 +199,8 @@ onPortConnect port host handle s = s {sConnections = Map.insert port (host, hand
 onPortDisconnect :: Port -> ApplicationState -> ApplicationState
 onPortDisconnect port s = s {sConnections = Map.delete port (sConnections s)}
 
-appendMessage :: Message -> ApplicationState -> ApplicationState
-appendMessage message s = s {sMessages = take 8 $ message : sMessages s}
+appendMessage :: Message -> UIState -> UIState
+appendMessage message s = s {uiStateMessages = take 8 $ message : uiStateMessages s}
 
 formatMessage :: Host -> Port -> String -> String
 formatMessage host port message = host ++ ":" ++ show port ++ " '" ++ message ++ "'"
@@ -189,7 +213,7 @@ shutdownApp = do
 
 togglePort :: ApplicationState -> IO ApplicationState
 togglePort s = do
-  case getSelected s of
+  case getSelected . appStateUI $ s of
     Just (host, port, status) -> action s
       where
         action = case status of
@@ -198,17 +222,17 @@ togglePort s = do
           _ -> pure
     Nothing -> pure s
 
-getSelected :: ApplicationState -> Maybe (Host, Port, PortStatus)
-getSelected s = case (Cursor.selected . sHosts $ s, Cursor.selected . sPorts $ s) of
+getSelected :: UIState -> Maybe (Host, Port, PortStatus)
+getSelected s = case (Cursor.selected . uiStateHosts $ s, Cursor.selected . uiStatePorts $ s) of
   (Just host, Just port) -> Just (host, port, status host port)
   _ -> Nothing
   where
-    status = queryPort (sConnections s)
+    status = queryPort (uiStateConnections s)
 
-queryPort :: Connections -> Host -> Port -> PortStatus
+queryPort :: Map.Map Port Host -> Host -> Port -> PortStatus
 queryPort connections host port = case Map.lookup port connections of
   Nothing -> Available
-  Just (usedBy, _) -> if usedBy == host then Connected else InUse
+  Just usedBy -> if usedBy == host then Connected else InUse
 
 connectPort :: Port -> Host -> ApplicationState -> IO ApplicationState
 connectPort port host s = Ex.handle onConnectError $ do
@@ -228,8 +252,8 @@ connectPort port host s = Ex.handle onConnectError $ do
         { Sub.pHProc = hProc,
           Sub.pHOut = hOut,
           Sub.pHErr = hErr,
-          Sub.pOnOut = \msg -> BChan.writeBChan (sChan s) (PortMessage (port, host, msg)),
-          Sub.pOnErr = \err -> BChan.writeBChan (sChan s) (PortError (port, host, err))
+          Sub.pOnOut = \msg -> BChan.writeBChan (sChan s) (MessageReceived (port, host, msg)),
+          Sub.pOnErr = \err -> BChan.writeBChan (sChan s) (ErrorReceived (port, host, err))
         }
 
     M.void $ Proc.waitForProcess hProc

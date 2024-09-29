@@ -30,6 +30,7 @@ executable portfwd
         containers,
         filepath,
         json,
+        microlens,
         process,
         utf8-string,
         vty
