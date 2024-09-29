@@ -27,11 +27,14 @@ type Connections = Map.Map Port (Host, Proc.ProcessHandle)
 
 data Message = InfoMessage String | ErrorMessage String deriving (Show)
 
+data UIEvent
+  = MessageReceived (Port, Host, String)
+  | ErrorReceived (Port, Host, String)
+
 data ApplicationEvent
   = PortConnected (Port, Host, Proc.ProcessHandle)
   | PortDisconnected Port
-  | MessageReceived (Port, Host, String)
-  | ErrorReceived (Port, Host, String)
+  | MkUIEvent UIEvent
 
 data UIState = MkUIState
   { uiStateHosts :: Cursor.Cursor Host,
@@ -158,22 +161,22 @@ lensUIState :: Lens.Lens' ApplicationState UIState
 lensUIState = Lens.lens appStateUI (\appState ui -> appState {appStateUI = ui})
 
 handleEvent :: Types.BrickEvent Name ApplicationEvent -> Types.EventM Name ApplicationState ()
-handleEvent vtyEv@(Types.VtyEvent ev) = case ev of
+handleEvent (Types.VtyEvent ev) = case ev of
   Vty.EvKey Vty.KEsc [] -> shutdownApp
   Vty.EvKey (Vty.KChar 'q') [] -> shutdownApp
   Vty.EvKey Vty.KEnter [] -> do
     s <- Types.get
     liftIO . togglePort $ s
-  _ -> Types.zoom lensUIState $ uiHandleEvent vtyEv
-handleEvent appEv@(Types.AppEvent ev) = case ev of
+  _ -> Types.zoom lensUIState $ uiHandleEvent (Types.VtyEvent ev)
+handleEvent (Types.AppEvent (MkUIEvent ev)) = Types.zoom lensUIState $ uiHandleEvent (Types.AppEvent ev)
+handleEvent (Types.AppEvent ev) = case ev of
   (PortConnected (port, host, handle)) ->
     Types.modify $ onPortConnect port host handle
   (PortDisconnected port) ->
     Types.modify . onPortDisconnect $ port
-  _ -> Types.zoom lensUIState $ uiHandleEvent appEv
 handleEvent _ = pure ()
 
-uiHandleEvent :: Types.BrickEvent Name ApplicationEvent -> Types.EventM Name UIState ()
+uiHandleEvent :: Types.BrickEvent Name UIEvent -> Types.EventM Name UIState ()
 uiHandleEvent (Types.VtyEvent ev) = case ev of
   Vty.EvKey Vty.KLeft [] -> do
     Types.modify (\s -> s {uiStateHosts = Cursor.previous (uiStateHosts s)})
@@ -189,7 +192,6 @@ uiHandleEvent (Types.AppEvent ev) = case ev of
     Types.modify . appendMessage . InfoMessage $ formatMessage host port message
   (ErrorReceived (port, host, message)) ->
     Types.modify . appendMessage . ErrorMessage $ formatMessage host port message
-  _ -> pure ()
 uiHandleEvent _ = pure ()
 
 onPortConnect :: Port -> Host -> Proc.ProcessHandle -> ApplicationState -> ApplicationState
@@ -251,8 +253,8 @@ connectPort port host s = Ex.handle onConnectError $ do
         { Sub.pHProc = hProc,
           Sub.pHOut = hOut,
           Sub.pHErr = hErr,
-          Sub.pOnOut = \msg -> BChan.writeBChan (sChan s) (MessageReceived (port, host, msg)),
-          Sub.pOnErr = \err -> BChan.writeBChan (sChan s) (ErrorReceived (port, host, err))
+          Sub.pOnOut = \msg -> BChan.writeBChan (sChan s) (MkUIEvent . MessageReceived $ (port, host, msg)),
+          Sub.pOnErr = \err -> BChan.writeBChan (sChan s) (MkUIEvent . ErrorReceived $ (port, host, err))
         }
 
     M.void $ Proc.waitForProcess hProc
