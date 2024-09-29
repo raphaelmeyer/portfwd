@@ -163,8 +163,7 @@ handleEvent vtyEv@(Types.VtyEvent ev) = case ev of
   Vty.EvKey (Vty.KChar 'q') [] -> shutdownApp
   Vty.EvKey Vty.KEnter [] -> do
     s <- Types.get
-    s' <- liftIO . togglePort $ s
-    Types.put s'
+    liftIO . togglePort $ s
   _ -> Types.zoom lensUIState $ uiHandleEvent vtyEv
 handleEvent appEv@(Types.AppEvent ev) = case ev of
   (PortConnected (port, host, handle)) ->
@@ -211,7 +210,7 @@ shutdownApp = do
   mapM_ (liftIO . (`disconnectPort` s)) (Map.keys . sConnections $ s)
   Brick.halt
 
-togglePort :: ApplicationState -> IO ApplicationState
+togglePort :: ApplicationState -> IO ()
 togglePort s = do
   case getSelected . appStateUI $ s of
     Just (host, port, status) -> action s
@@ -219,8 +218,8 @@ togglePort s = do
         action = case status of
           Available -> connectPort port host
           Connected -> disconnectPort port
-          _ -> pure
-    Nothing -> pure s
+          _ -> pure . const ()
+    Nothing -> pure ()
 
 getSelected :: UIState -> Maybe (Host, Port, PortStatus)
 getSelected s = case (Cursor.selected . uiStateHosts $ s, Cursor.selected . uiStatePorts $ s) of
@@ -234,7 +233,7 @@ queryPort connections host port = case Map.lookup port connections of
   Nothing -> Available
   Just usedBy -> if usedBy == host then Connected else InUse
 
-connectPort :: Port -> Host -> ApplicationState -> IO ApplicationState
+connectPort :: Port -> Host -> ApplicationState -> IO ()
 connectPort port host s = Ex.handle onConnectError $ do
   let bind = show port ++ ":localhost:" ++ show port
 
@@ -258,15 +257,14 @@ connectPort port host s = Ex.handle onConnectError $ do
 
     M.void $ Proc.waitForProcess hProc
     BChan.writeBChan (sChan s) (PortDisconnected port)
-  pure s
   where
-    onConnectError :: Ex.IOException -> IO ApplicationState
-    onConnectError _ = pure s
+    onConnectError :: Ex.IOException -> IO ()
+    onConnectError _ = pure ()
 
-disconnectPort :: Port -> ApplicationState -> IO ApplicationState
+disconnectPort :: Port -> ApplicationState -> IO ()
 disconnectPort port s = do
   case Map.lookup port (sConnections s) of
     Just (_, handle) -> do
       Proc.terminateProcess handle
-      pure s
-    Nothing -> pure s
+      pure ()
+    Nothing -> pure ()
