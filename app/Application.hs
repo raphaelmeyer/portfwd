@@ -26,17 +26,17 @@ type Connections = Map.Map Port (Host, Proc.ProcessHandle)
 
 data Message = InfoMessage String | ErrorMessage String deriving (Show)
 
-data ConnectionEvent
+data ApplicationEvent
   = PortConnected (Port, Host, Proc.ProcessHandle)
   | PortDisconnected Port
   | PortMessage (Port, Host, String)
   | PortError (Port, Host, String)
 
-data ConnectionState = ConnectionState
+data ApplicationState = ApplicationState
   { sHosts :: Cursor.Cursor Host,
     sPorts :: Cursor.Cursor Port,
     sConnections :: Connections,
-    sChan :: BChan.BChan ConnectionEvent,
+    sChan :: BChan.BChan ApplicationEvent,
     sMessages :: [Message]
   }
 
@@ -56,9 +56,9 @@ onError = showError
 showError :: (Show s) => s -> IO ()
 showError err = putStrLn $ "❗ " ++ show err
 
-initialState :: Settings.Settings -> BChan.BChan ConnectionEvent -> ConnectionState
+initialState :: Settings.Settings -> BChan.BChan ApplicationEvent -> ApplicationState
 initialState settings chan =
-  ConnectionState
+  ApplicationState
     { sHosts = Cursor.makeCursor (Settings.hosts settings),
       sPorts = Cursor.makeCursor (Settings.ports settings),
       sConnections = Map.empty,
@@ -66,7 +66,7 @@ initialState settings chan =
       sMessages = []
     }
 
-app :: Brick.App ConnectionState ConnectionEvent Name
+app :: Brick.App ApplicationState ApplicationEvent Name
 app =
   Brick.App
     { Brick.appDraw = drawUI,
@@ -76,13 +76,13 @@ app =
       Brick.appAttrMap = const attributes
     }
 
-drawUI :: ConnectionState -> [Types.Widget Name]
+drawUI :: ApplicationState -> [Types.Widget Name]
 drawUI s = [Core.vBox [hosts, Border.hBorder, messages]]
   where
     hosts = Core.hBox . Cursor.mapWith (drawHost s) . sHosts $ s
     messages = Core.padLeftRight 1 . Core.vBox . map drawMessage . sMessages $ s
 
-drawHost :: ConnectionState -> Bool -> Host -> Types.Widget Name
+drawHost :: ApplicationState -> Bool -> Host -> Types.Widget Name
 drawHost s selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 . Core.vBox $ box
   where
     box = title : Border.hBorder : Cursor.mapWith drawPort' (sPorts s)
@@ -90,7 +90,7 @@ drawHost s selected host = Core.padLeftRight 1 . Border.border . Core.hLimit 16 
     attr = if selected then aHost <> aSelected else aHost
     drawPort' current = drawPort s host (current && selected)
 
-drawPort :: ConnectionState -> Host -> Bool -> Port -> Types.Widget Name
+drawPort :: ApplicationState -> Host -> Bool -> Port -> Types.Widget Name
 drawPort s host selected port = Core.padLeft (Core.Pad 2) . Core.withAttr attr . Core.str $ prefix ++ show port
   where
     prefix = if selected then "> " else "  "
@@ -141,7 +141,7 @@ attributes =
       (aError, Util.fg Vty.brightRed)
     ]
 
-handleEvent :: Types.BrickEvent Name ConnectionEvent -> Types.EventM Name ConnectionState ()
+handleEvent :: Types.BrickEvent Name ApplicationEvent -> Types.EventM Name ApplicationState ()
 handleEvent (Types.VtyEvent ev) = case ev of
   Vty.EvKey Vty.KEsc [] -> shutdownApp
   Vty.EvKey (Vty.KChar 'q') [] -> shutdownApp
@@ -169,25 +169,25 @@ handleEvent (Types.AppEvent ev) = case ev of
     Types.modify . appendMessage . ErrorMessage $ formatMessage host port message
 handleEvent _ = pure ()
 
-onPortConnect :: Port -> Host -> Proc.ProcessHandle -> ConnectionState -> ConnectionState
+onPortConnect :: Port -> Host -> Proc.ProcessHandle -> ApplicationState -> ApplicationState
 onPortConnect port host handle s = s {sConnections = Map.insert port (host, handle) (sConnections s)}
 
-onPortDisconnect :: Port -> ConnectionState -> ConnectionState
+onPortDisconnect :: Port -> ApplicationState -> ApplicationState
 onPortDisconnect port s = s {sConnections = Map.delete port (sConnections s)}
 
-appendMessage :: Message -> ConnectionState -> ConnectionState
+appendMessage :: Message -> ApplicationState -> ApplicationState
 appendMessage message s = s {sMessages = take 8 $ message : sMessages s}
 
 formatMessage :: Host -> Port -> String -> String
 formatMessage host port message = host ++ ":" ++ show port ++ " '" ++ message ++ "'"
 
-shutdownApp :: Types.EventM Name ConnectionState ()
+shutdownApp :: Types.EventM Name ApplicationState ()
 shutdownApp = do
   s <- Types.get
   mapM_ (liftIO . (`disconnectPort` s)) (Map.keys . sConnections $ s)
   Brick.halt
 
-togglePort :: ConnectionState -> IO ConnectionState
+togglePort :: ApplicationState -> IO ApplicationState
 togglePort s = do
   case getSelected s of
     Just (host, port, status) -> action s
@@ -198,7 +198,7 @@ togglePort s = do
           _ -> pure
     Nothing -> pure s
 
-getSelected :: ConnectionState -> Maybe (Host, Port, PortStatus)
+getSelected :: ApplicationState -> Maybe (Host, Port, PortStatus)
 getSelected s = case (Cursor.selected . sHosts $ s, Cursor.selected . sPorts $ s) of
   (Just host, Just port) -> Just (host, port, status host port)
   _ -> Nothing
@@ -210,7 +210,7 @@ queryPort connections host port = case Map.lookup port connections of
   Nothing -> Available
   Just (usedBy, _) -> if usedBy == host then Connected else InUse
 
-connectPort :: Port -> Host -> ConnectionState -> IO ConnectionState
+connectPort :: Port -> Host -> ApplicationState -> IO ApplicationState
 connectPort port host s = Ex.handle onConnectError $ do
   let bind = show port ++ ":localhost:" ++ show port
 
@@ -236,10 +236,10 @@ connectPort port host s = Ex.handle onConnectError $ do
     BChan.writeBChan (sChan s) (PortDisconnected port)
   pure s
   where
-    onConnectError :: Ex.IOException -> IO ConnectionState
+    onConnectError :: Ex.IOException -> IO ApplicationState
     onConnectError _ = pure s
 
-disconnectPort :: Port -> ConnectionState -> IO ConnectionState
+disconnectPort :: Port -> ApplicationState -> IO ApplicationState
 disconnectPort port s = do
   case Map.lookup port (sConnections s) of
     Just (_, handle) -> do
