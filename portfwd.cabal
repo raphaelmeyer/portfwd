@@ -21,7 +21,9 @@ executable portfwd
         Application,
         Cursor,
         Settings,
-        SubProcess
+        SubProcess,
+        Types,
+        UI
     -- other-extensions:
     build-depends:
         base,
