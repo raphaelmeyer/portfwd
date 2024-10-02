@@ -16,7 +16,7 @@ import qualified System.Process as Proc
 import Types (Host, Port)
 import qualified UI
 
-type Connections = Map.Map Port (Host, Proc.ProcessHandle)
+type SubProcesses = Map.Map Port Proc.ProcessHandle
 
 data ApplicationEvent
   = PortConnected (Port, Host, Proc.ProcessHandle)
@@ -26,7 +26,7 @@ data ApplicationEvent
 
 data ApplicationState = ApplicationState
   { appStateUI :: UI.UIState,
-    sConnections :: Connections,
+    appStateSubProcesses :: SubProcesses,
     sChan :: BChan.BChan ApplicationEvent
   }
 
@@ -46,7 +46,7 @@ initialState :: Settings.Settings -> BChan.BChan ApplicationEvent -> Application
 initialState settings chan =
   ApplicationState
     { appStateUI = UI.mkUIState settings,
-      sConnections = Map.empty,
+      appStateSubProcesses = Map.empty,
       sChan = chan
     }
 
@@ -81,10 +81,10 @@ handleEvent (Types.VtyEvent ev) = case ev of
 handleEvent (Types.AppEvent ev) = case ev of
   (PortConnected (port, host, handle)) -> do
     Types.zoom lensUIState . Types.modify $ UI.onPortConnected port host
-    Types.modify (\s -> s {sConnections = Map.insert port (host, handle) (sConnections s)})
+    Types.modify (\s -> s {appStateSubProcesses = Map.insert port handle . appStateSubProcesses $ s})
   (PortDisconnected port) -> do
     Types.zoom lensUIState . Types.modify $ UI.onPortDisconnected port
-    Types.modify (\s -> s {sConnections = Map.delete port (sConnections s)})
+    Types.modify (\s -> s {appStateSubProcesses = Map.delete port . appStateSubProcesses $ s})
   (MessageReceived (port, host, message)) ->
     Types.zoom lensUIState . Types.modify $ UI.onMessageReceived port host message
   (ErrorReceived (port, host, message)) ->
@@ -94,7 +94,7 @@ handleEvent _ = pure ()
 shutdownApp :: Types.EventM UI.Name ApplicationState ()
 shutdownApp = do
   s <- Types.get
-  mapM_ (liftIO . (`disconnectPort` s)) (Map.keys . sConnections $ s)
+  mapM_ (liftIO . (`disconnectPort` s)) (Map.keys . appStateSubProcesses $ s)
   Brick.halt
 
 togglePort :: ApplicationState -> IO ()
@@ -138,8 +138,8 @@ connectPort port host s = Ex.handle onConnectError $ do
 
 disconnectPort :: Port -> ApplicationState -> IO ()
 disconnectPort port s = do
-  case Map.lookup port (sConnections s) of
-    Just (_, handle) -> do
+  case Map.lookup port . appStateSubProcesses $ s of
+    Just handle -> do
       Proc.terminateProcess handle
       pure ()
     Nothing -> pure ()
