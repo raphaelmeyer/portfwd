@@ -1,5 +1,7 @@
 module SubProcess (handleOutput, SubProcess (..)) where
 
+import qualified Control.Concurrent as Concurrent
+import qualified Control.Monad as Monad
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.UTF8 as UTF8
 import qualified System.IO as IO
@@ -43,6 +45,7 @@ getLastOutput sub = do
 getOutput :: String -> IO.Handle -> IO (String, [String])
 getOutput buf hOut = do
   bs <- BS.hGetNonBlocking hOut 256
+  Monad.when (BS.null bs) $ Concurrent.threadDelay 250
   pure $ getLines (buf ++ (filter (/= '\r') . UTF8.toString $ bs))
 
 getLines :: String -> (String, [String])
